@@ -2,15 +2,12 @@
 #include <string.h>
 #include "Encoder.h"
 #include "Communications.h"
+#include<PriorityQueue.h>
 
-//TO BE CHANGED
 int motorPin_onPin = 9;
 int motorPin = 9;
 
 Encoder myEnc(3, 2);
-
-//no led pin when testing
-int led = 13;
 
 Servo Motor0;
 
@@ -34,7 +31,7 @@ long newPosition = 0;
 
 //Variables for sensor levels
 //variables for limit switches using digital pins
-//int level_1 = 31;
+int level_1 = 31;
 int level_2 = 35;
 int level_3 = 39;
 int level_4 = 43;
@@ -48,6 +45,28 @@ const int doorSwitchPin = 6;
 int currFloor = 0;
 int prevFloor = 0;
 int elevatorStatus = 0;
+int queueStatus = 0;
+
+#define LENGTH (10)
+
+//Library used is a priority queue library found here:
+//https://github.com/CollinDietz/PriorityQueue
+
+//sort by ASCII value
+bool queueAscending(int a, int b){
+  return a < b;
+}
+
+bool queueDescending(int a, int b){
+  return a > b;
+}
+
+//defines the two priority queues, one that's used when the elevator ascends and the other while it descends
+PriorityQueue<int> queueFloorsAbove = PriorityQueue<int>(queueAscending);
+PriorityQueue<int> queueFloorsBelow = PriorityQueue<int>(queueDescending);
+
+//Array for floors present in either priority queue
+bool inQueue[] = {false, false, false, false, false};
 
 void setup() {
   // put your setup code here, to run once:
@@ -65,7 +84,7 @@ void setup() {
  doorServo.attach(doorServoPin);
  
  //initalisation of pins for sensros
-// pinMode(level_1, INPUT);    
+ pinMode(level_1, INPUT);    
  pinMode(level_2, INPUT);   
  pinMode(level_3, INPUT);
  pinMode(level_4, INPUT);
@@ -85,7 +104,38 @@ void setup() {
 //openDoors();
 }
 
+void updateElevatorQueues(String itemToAdd){
+  int floorToAdd = 0;
+  
+  //checks if the input is a value from 1 - 5, to ensure the input is a valid floor number
+  for(int i = 1; i <= 5; i++){
+    if(itemToAdd.equals(String(i))){
+      floorToAdd = itemToAdd.toInt();
+      break;
+    }
+  }
 
+  //if floorToAdd = 0 by this point, input wasn't a valid floor, so just return
+  if(floorToAdd == 0){
+    return;
+  }
+  
+  //Check if the floor already exists in either one of the two queues. If true, ignore this input
+  if(inQueue[floorToAdd - 1] == false){
+    
+    //Check if the floor is above where the carriage is currently located. If true, add it to the ascending queue
+    //and set the boolean in inQueue at the index corrosponding to the floor number - 1 to true
+    if(floorToAdd > currFloor || currFloor == 1 || floorToAdd == currFloor && elevatorStatus == -1){
+      queueFloorsAbove.push(floorToAdd);
+      inQueue[floorToAdd - 1] = true;
+
+    //Else put it in the descending queue and set the boolean in inQueue at the same index to true.
+    } else if(floorToAdd < currFloor || currFloor == 5 || floorToAdd == currFloor && elevatorStatus == 1){
+      queueFloorsBelow.push(floorToAdd);
+      inQueue[floorToAdd - 1] = true;
+    }
+  }
+}
 
 // Motor0's RPM should be understood to determine the speed of the elevator. 
 // As it approaches its destination, slow to a stop.
@@ -181,9 +231,6 @@ void motorControl(int state){
  *   "U" = Motor going forward i.e. upwards
  *   "D" = Motor going reverse i.e. downwards
  *   "S" = Motor is stopped
- *   "O" = Doors opening
- *   "C" = Closing doors
- *
  */
 
 void elevatorMovement(String data) {
@@ -198,31 +245,19 @@ void elevatorMovement(String data) {
     timeFromBeginning = 0;
     ease_into(data);
     motorControl(1);
-  }
-  // To be calibrated
-  else if(data.equals("S")){
+  } else if(data.equals("S")){
     ease_into(data);
     motorControl(2);
   } 
-  // To be calibrated
-  else if(data.equals("O")){
-   doorServo.write(0); // clock-wise
-  delay(3000);
-  doorServo.write(95); // stop
-  } else if(data.equals("C")){
-      doorServo.write(190); //anti-clockwise
-      delay(3000);
-       doorServo.write(95); //stop
-  }
 }
 
+//Reads the sensors present at every level and updates currFloor based on
 void floorCheck(){
-//  if(digitalRead(level_1) == LOW) {
-//    currFloor = 1;
-//    Serial.println(currFloor);
-//    //Serial.println(prevFloor); 
-//  } else 
-  if (digitalRead(level_2) == LOW) {             
+  if(digitalRead(level_1) == LOW) {
+    currFloor = 1;
+    Serial.println(currFloor);
+    //Serial.println(prevFloor); 
+  } else if (digitalRead(level_2) == LOW) {             
     currFloor = 2;  
     Serial.println(currFloor);
     //Serial.println(prevFloor);  
@@ -241,12 +276,14 @@ void floorCheck(){
   } 
 }
 
+//When called opens the elevator doors
 void openDoors(){
   doorServo.write(0);
   delay(1200);
   doorServo.write(95);
 }
 
+//When called closes the elevator doors
 void closeDoors(){
   //while(digitalRead(doorSwitchPin) != LOW){
   doorServo.write(190);
@@ -255,11 +292,10 @@ void closeDoors(){
 }
 
 void loop() {
-  
-//Testing
   String data = Communications.receive();
     if (data != "") { 
       Serial.println(data);
+      updateElevatorQueues(data);
 //      if (data.equals("E") || data.equals("D") || data.equals("U")){
 //        Communications.send("MEGA OK");
 //      } else {
@@ -274,44 +310,83 @@ void loop() {
     
   floorCheck();
 
-  if(data.equals("S")){
-    elevatorMovement(data);
+  //Where neither queue has anything in it
+  if(queueFloorsBelow.count() == 0 && queueFloorsAbove.count() == 0 || queueStatus == 0){
+    elevatorMovement("S");
     elevatorStatus = 0;
   }
 
-  if(elevatorStatus == 0){
-    if(data.equals("U")){
-      elevatorStatus = 1;
-      closeDoors();
-      floorCheck();
-      prevFloor = currFloor;
-      elevatorMovement(data);
-    } else if(data.equals("D")){
+  //Where queueFloorsBelow is the only queue that is filled
+    if(queueFloorsBelow.count() != 0 || queueStatus == 1){
+      queueStatus = 1;
+      elevatorMovement("D");
       elevatorStatus = -1;
-      closeDoors();
-      floorCheck();
-      prevFloor = currFloor;
-      elevatorMovement(data);
-    }
-  }
 
-  if(elevatorStatus == 1){
-    if(currFloor > prevFloor){
-      elevatorMovement("S");
-      elevatorStatus = 0;
-      openDoors();
-      closeDoors();
+      if(queueFloorsBelow.peek() == currFloor){
+        elevatorMovement("S");
+        queueFloorsBelow.pop();
+        elevatorStatus = 0;
+        openDoors();
+        delay(2000);
+        closeDoors();
+      }  
     }
-  }
 
-  if(elevatorStatus == -1){
-    if(currFloor < prevFloor){
-      elevatorMovement("S");
-      elevatorStatus = 0;
-      openDoors();
-      closeDoors();
+    //Where queueFloorsAbove is the only queue that is filled
+    if(queueFloorsAbove.count() != 0 || queueStatus == 2){
+      queueStatus = 2;
+      elevatorMovement("U");
+      elevatorStatus = 1;
+
+      if(queueFloorsAbove.peek() == currFloor){
+        elevatorMovement("S");
+        queueFloorsAbove.pop();
+        elevatorStatus = 0;
+        openDoors();
+        delay(2000);
+        closeDoors();
+      }
     }
-  }
+
+    //Where queueFloorsAbove was the first queue filled, then queueFloorsBelow
+    if(queueFloorsAbove.count() != 0 && queueFloorsBelow != 0 && queueStatus == 2 || queueStatus == 3){
+      queueStatus = 3;
+      elevatorMovement("U");
+      elevatorStatus = 1;
+
+      if(queueFloorsAbove.peek() == currFloor){
+        elevatorMovement("S");
+        queueFloorsAbove.pop();
+        elevatorStatus = 0;
+        openDoors();
+        delay(2000);
+        closeDoors();
+      }
+
+      if(queueFloorsAbove.count() == 0){
+        queueStatus = 1;
+      }
+    }
+
+    //Where queueFloorsBelow was the first queue filled, then queueFloorsAbove
+    if(queueFloorsBelow.count() != 0 && queueFloorsAbove.count() != 0 && queueStatus == 1 || queueStatus == 4){
+      queueStatus = 4;
+      elevatorMovement("D");
+      elevatorStatus = -1;
+
+      if(queueFloorsBelow.peek() == currFloor){
+        elevatorMovement("S");
+        queueFloorsBelow.pop();
+        elevatorStatus = 0;
+        openDoors();
+        delay(2000);
+        closeDoors();
+      }
+
+      if(queueFloorsBelow.count() == 0){
+        queueStatus = 2;
+      }
+    }
 
   //Serial.println(data);
   long newPosition = myEnc.read();
@@ -319,5 +394,4 @@ void loop() {
     oldPosition = newPosition;
     Serial.println(newPosition);
   }
-  
 }
